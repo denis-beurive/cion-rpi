@@ -2,9 +2,7 @@
 
 This document describes the configuration of a Raspberry Pi for CLION (version `2022.3.2`) full remote development.
 
-It also provides a simple example that shows how to use the [libGpiod library](https://git.kernel.org/pub/scm/libs/libgpiod/libgpiod.git/about/) (with threads).
-
-![](doc/images/elect.png)
+It also provides simple examples that shows how to use the [libGpiod library](https://git.kernel.org/pub/scm/libs/libgpiod/libgpiod.git/about/) (with threads).
 
 ## Hardware specification:
 
@@ -108,7 +106,7 @@ echo "int main(){return 0;}" | gcc -xc -lgpiod -
 echo | gcc -E -Wp,-v - | grep -v "# "
 ```
 
-Get the GPIO chip name:
+Get the GPIO chip receiver_name:
 
 ```bash
 $ gpiodetect
@@ -132,7 +130,16 @@ gpioset --mode=time --sec=3 `gpiofind "GPIO17"`=1
 gpioset --mode=time --sec=3 -b `gpiofind "GPIO17"`=1
 ```
 
-# Example using libGpiod
+## Examples using libGpiod
 
-See [this code](main.c).
+### Example 1
 
+![](doc/images/gpio1.png)
+
+See [this code](gpio1.c).
+
+### Example 2
+
+![](doc/images/gpio2.png)
+
+See [this code](gpio2.c).

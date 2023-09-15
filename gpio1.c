@@ -37,7 +37,7 @@
  * Data passed to the function that implements a thread used to control a LED.
  */
 
-struct led_args {
+struct issuer_args {
     /** The number of seconds to wait for a LED to change its state. */
     time_t duration_sec;
     /** The number of nano seconds to wait for a LED to change its state.
@@ -69,8 +69,8 @@ void error(char *message) {
  */
 
 void* led_thread(void *in_args) {
-    struct led_args   *args = (struct led_args*)in_args;
-    struct gpiod_line *led;
+    struct issuer_args *args = (struct issuer_args*)in_args;
+    struct gpiod_line  *led;
     struct timespec duration = { args->duration_sec, args->duration_nano_sec };
     struct timespec remaining;
     struct timespec remaining_again;
@@ -129,9 +129,9 @@ void* led_thread(void *in_args) {
 
 int main()
 {
-    struct gpiod_chip *chip;
-    struct led_args   green_args, red_args;
-    pthread_t all_threads[NUMBER_OF_LED];
+    struct gpiod_chip  *chip;
+    struct issuer_args green_args, red_args;
+    pthread_t          all_threads[NUMBER_OF_LED];
     int       all_threads_index = 0;
 
     // Open GPIO chip
