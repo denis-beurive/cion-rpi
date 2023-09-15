@@ -138,8 +138,12 @@ gpioset --mode=time --sec=3 -b `gpiofind "GPIO17"`=1
 
 See [this code](gpio1.c).
 
+> Thanks to [Circuit Diagram](https://www.circuit-diagram.org/editor/). 
+
 ### Example 2
 
 ![](doc/images/gpio2.png)
 
 See [this code](gpio2.c).
+
+> Thanks to [Circuit Diagram](https://www.circuit-diagram.org/editor/).
