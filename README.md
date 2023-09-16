@@ -144,6 +144,16 @@ See [this code](gpio1.c).
 
 ![](doc/images/gpio2.png)
 
+* `GPIO16` set as output (connected to `GPIO21`).
+* `GPIO17` set as output (connected to a LED).
+* `GPIO21` set as input.
+
+One thread periodically changes the value of `GPIO16`.
+
+One thread:
+* waits for any change on the value of `GPIO21` (which reflects the value of `GPIO16`).
+* sets the value read from `GPIO21` to `GPIO17` (which changes the state of the LED).
+
 See [this code](gpio2.c).
 
 > Thanks to [Circuit Diagram](https://www.circuit-diagram.org/editor/).

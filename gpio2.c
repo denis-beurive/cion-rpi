@@ -33,47 +33,7 @@
 #define GPIO_17 17
 #define GPIO_21 21
 #define NUMBER_OF_THREAD 2
-
-/**
- * Data passed to the function that implements a thread used to control the issuer.
- */
-
-struct issuer_args {
-    /** The number of seconds to wait for the signal to change its level. */
-    time_t duration_sec;
-    /** The number of nano seconds to wait for the signal to change its level.
-     *  This value must be in the range [0, 999999999]
-     */
-    long duration_nano_sec;
-    /** The number of changes of state. */
-    long count;
-    /** The (GPIO) line ID that controls the state of the LED. */
-    int line_id;
-    /** An arbitrary name for the line. */
-    char *name;
-    /** The (GPIO) chip ID. */
-    struct gpiod_chip *chip;
-};
-
-/**
- * Data passed to the function that implements a thread used to control the receiver.
- */
-
-struct receiver_args {
-    /** The number of changes of state before termination. */
-    long count;
-    /** The (GPIO) line ID that receives the "message" from the issuer. */
-    int  receiver_line_id;
-    /** The (GPIO) line ID used to control the LED. */
-    int  controller_line_id;
-    /** An arbitrary name for the line that receives the "message" from the issuer. */
-    char *receiver_name;
-    /** An arbitrary name for the line that used to control the LED. */
-    char *controller_name;
-    /** The (GPIO) chip ID. */
-    struct gpiod_chip *chip;
-};
-
+static struct gpiod_chip *CHIP;
 
 /**
  * Print an error message and terminate the program.
@@ -86,11 +46,60 @@ void error(char *message) {
 }
 
 /**
- * Implement the thread that controls the issuer.
- * @param in_args Pointer to `struct issuer_args`.
+ * Reset the GPIO.
  */
 
+void reset_gpio() {
+    printf("Reset GPIO\n");
+    int pins[3] = { GPIO_16, GPIO_17, GPIO_21};
+    for (int i=0; i<3; i++) {
+        struct gpiod_line *l = gpiod_chip_get_line(CHIP, pins[i]);
+        if (NULL == l) {
+            fprintf(stderr, "Warning: error while resetting line #%d (gpiod_chip_get_line() - errno: %d)\n", pins[i], errno);
+            continue;
+        }
+        if (-1 == gpiod_line_request_input(l, "line")) {
+            fprintf(stderr, "Warning: error while resetting line #%d (gpiod_line_request_input() - errno: %d)\n", pins[i], errno);
+            continue;
+        }
+        gpiod_line_release(l);
+    }
+    gpiod_chip_close(CHIP);
+}
+
+// ---------------------------------------------------------------------------------
+// ISSUER
+// ---------------------------------------------------------------------------------
+
+struct issuer_args {
+    /** The number of seconds to wait for the signal to change its level. */
+    time_t duration_sec;
+    /** The number of nano seconds to wait for the signal to change its level.
+     *  This value must be in the range [0, 999999999]
+     */
+    long duration_nano_sec;
+    /** The number of changes of state. */
+    long count;
+    /** The (GPIO) line ID that controls the state of the LED. */
+    int line_id;
+};
+
+struct issuer_thread_resource {
+    struct gpiod_line  *issuer;
+};
+
+void issuer_thread_init(struct issuer_thread_resource *resource) {
+    resource->issuer = NULL;
+}
+
+void issuer_thread_terminate(struct issuer_thread_resource *resource) {
+    if (NULL != resource->issuer) {
+        gpiod_line_release(resource->issuer);
+    }
+}
+
 void* issuer_thread(void *in_args) {
+    struct issuer_thread_resource resource;
     struct issuer_args *args = (struct issuer_args*)in_args;
     struct gpiod_line  *issuer;
     struct timespec duration = { args->duration_sec, args->duration_nano_sec };
@@ -98,26 +107,31 @@ void* issuer_thread(void *in_args) {
     struct timespec remaining_again;
     struct timespec *d, *r;
 
+    issuer_thread_init(&resource);
+
     // Open GPIO line. Set the line's mode to output.
-    issuer = gpiod_chip_get_line(args->chip, args->line_id);
-    if (NULL == issuer) {
+    resource.issuer = gpiod_chip_get_line(CHIP, args->line_id);
+    if (NULL == resource.issuer) {
+        issuer_thread_terminate(&resource);
         error("issuer: cannot get the line");
+
     }
 
     // Open issuer's line for output
-    if (-1 == gpiod_line_request_output(issuer, args->name, 0)) {
-        gpiod_line_release(issuer);
+    if (-1 == gpiod_line_request_output(resource.issuer, "issuer", 0)) {
+        issuer_thread_terminate(&resource);
         error("issuer: cannot set the line's mode to output");
     }
 
     for (long cycle=0; cycle<args->count; cycle++) {
-        int state = (cycle & 0x1) != 0;
+        int value = (cycle & 0x1) != 0;
         int done;
 
         d = &duration;
         r = &remaining;
-        printf("I [%4ld] Set %s\n", cycle, state ? "up" : "down");
-        if (-1 == gpiod_line_set_value(issuer, state)) {
+        printf("I [%4ld] Set %s\n", cycle, value ? "up" : "down");
+        if (-1 == gpiod_line_set_value(resource.issuer, value)) {
+            issuer_thread_terminate(&resource);
             error("issuer: cannot change the value of the output");
         }
 
@@ -130,129 +144,111 @@ void* issuer_thread(void *in_args) {
                         r = &remaining_again;
                         done = 0;
                     }; break;
-                    case EFAULT: error("issuer: problem with copying information from user space");
-                    case EINVAL: error("issuer: unexpected period duration");
-                    default: error("issuer: unexpected errno value");
+                    case EFAULT: {
+                        issuer_thread_terminate(&resource);
+                        error("issuer: problem with copying information from user space");
+                    }
+                    case EINVAL: {
+                        issuer_thread_terminate(&resource);
+                        error("issuer: unexpected period duration");
+                    }
+                    default: {
+                        issuer_thread_terminate(&resource);
+                        error("issuer: unexpected errno value");
+                    }
                 }
             }
         } while(! done);
     }
 
-    // Avoid useless current drain.
-    if (-1 == gpiod_line_set_value(issuer, 0)) {
-        error("issuer: cannot change the value of the output");
-    }
-
-    // TODO: refactor
-
-    gpiod_line_release(issuer);
-
-    // Set issuer's line for input (this is a safety measure).
-    issuer = gpiod_chip_get_line(args->chip, args->line_id);
-    if (NULL == issuer) {
-        error("issuer: cannot get the line");
-    }
-
-    if (-1 == gpiod_line_request_input(issuer, args->name)) {
-        gpiod_line_release(issuer);
-        printf("errno: %d\n", errno);
-        printf("=> %s\n", strerror(errno));
-        error("issuer: cannot set the line's mode to input");
-    }
-
-    gpiod_line_release(issuer);
-
+    issuer_thread_terminate(&resource);
     return NULL;
 }
 
+// ---------------------------------------------------------------------------------
+// ISSUER
+// ---------------------------------------------------------------------------------
 
-/**
- * Implement the thread that controls the receiver.
- * @param in_args Pointer to `struct receiver_args`.
- */
+struct receiver_args {
+    /** The number of changes of state before termination. */
+    long count;
+    /** The (GPIO) line ID that receives the "message" from the issuer. */
+    int  receiver_line_id;
+    /** The (GPIO) line ID used to control the LED. */
+    int  controller_line_id;
+};
 
-void* receiver_thread(void *in_args) {
-    struct receiver_args *args = (struct receiver_args*)in_args;
+struct receiver_thread_resource {
     struct gpiod_line  *receiver;
     struct gpiod_line  *controller;
+};
+
+void receiver_thread_init(struct receiver_thread_resource *resource) {
+    resource->receiver = NULL;
+    resource->controller = NULL;
+}
+
+void receiver_thread_terminate(struct receiver_thread_resource *resource) {
+    if (NULL != resource->receiver) {
+        gpiod_line_release(resource->receiver);
+    }
+    if (NULL != resource->controller) {
+        gpiod_line_release(resource->controller);
+    }
+}
+
+void* receiver_thread(void *in_args) {
+    struct receiver_thread_resource resource;
+    struct receiver_args *args = (struct receiver_args*)in_args;
     struct gpiod_line_event event;
     int state;
 
+    receiver_thread_init(&resource);
+
     // Open GPIO lines.
-    receiver = gpiod_chip_get_line(args->chip, args->receiver_line_id);
-    if (NULL == receiver) {
+    resource.receiver = gpiod_chip_get_line(CHIP, args->receiver_line_id);
+    if (NULL == resource.receiver) {
+        receiver_thread_terminate(&resource);
         error("receiver: cannot get the line used to receive messages from the issuer");
     }
-    controller = gpiod_chip_get_line(args->chip, args->controller_line_id);
-    if (NULL == receiver) {
+    resource.controller = gpiod_chip_get_line(CHIP, args->controller_line_id);
+    if (NULL == resource.receiver) {
+        receiver_thread_terminate(&resource);
         error("receiver: cannot get the line used to control the LED");
     }
 
-    // Set lines' modes.
-//    if (-1 == gpiod_line_request_input(receiver, args->receiver_name)) {
-//        gpiod_line_release(receiver);
-//        error("receiver: cannot set the line's mode to input");
-//    }
-    if (-1 == gpiod_line_request_output(controller, args->controller_name, 0)) {
-        gpiod_line_release(receiver);
-        gpiod_line_release(controller);
+    if (-1 == gpiod_line_request_output(resource.controller, "controller", 0)) {
+        receiver_thread_terminate(&resource);
         error("receiver: cannot set the line's mode to input");
     }
 
-    if (-1 == gpiod_line_request_both_edges_events(receiver, args->receiver_name)) {
-        printf("errno: %d\n", errno);
-        printf("=> %s\n", strerror(errno));
-        gpiod_line_release(receiver);
-        gpiod_line_release(controller);
+    if (-1 == gpiod_line_request_both_edges_events(resource.receiver, "receiver")) {
+        receiver_thread_terminate(&resource);
         error("receiver: cannot set the line's callbacks");
     }
 
     for (long cycle=0; cycle<args->count; cycle++) {
 
         // Wait for an event.
-        if (-1 == gpiod_line_event_wait(receiver, NULL)) {
-            gpiod_line_release(receiver);
-            gpiod_line_release(controller);
+        if (-1 == gpiod_line_event_wait(resource.receiver, NULL)) {
+            receiver_thread_terminate(&resource);
             error("receiver: error while waiting for an event");
         }
 
-        if (-1 == gpiod_line_event_read(receiver, &event)) {
-            gpiod_line_release(receiver);
-            gpiod_line_release(controller);
+        if (-1 == gpiod_line_event_read(resource.receiver, &event)) {
+            receiver_thread_terminate(&resource);
             error("receiver: error while reading the event");
         }
 
         printf("Get an event!\n");
         state = !state;
-        if (-1 == gpiod_line_set_value(controller, state)) {
-            gpiod_line_release(receiver);
-            gpiod_line_release(controller);
+        if (-1 == gpiod_line_set_value(resource.controller, state)) {
+            receiver_thread_terminate(&resource);
             error("contoller: cannot change the value of the output");
         }
     }
 
-    // Avoid useless current drain.
-    if (-1 == gpiod_line_set_value(controller, 0)) {
-        error("receiver: cannot change the value of the output for the line that controls the LED");
-    }
-
-    // TODO: refactor
-
-    gpiod_line_release(receiver);
-    gpiod_line_release(controller);
-
-    controller = gpiod_chip_get_line(args->chip, args->controller_line_id);
-    if (NULL == receiver) {
-        error("receiver: cannot get the line used to control the LED");
-    }
-
-    if (-1 == gpiod_line_request_input(controller, args->controller_name)) {
-        gpiod_line_release(controller);
-        error("receiver: cannot set the line's mode to input");
-    }
-
-    gpiod_line_release(controller);
-
+    receiver_thread_terminate(&resource);
     return NULL;
 }
 
@@ -261,31 +257,26 @@ void* receiver_thread(void *in_args) {
 
 int main()
 {
-    struct gpiod_chip  *chip;
     struct issuer_args issuer_arg;
     struct receiver_args receiver_arg;
     pthread_t          all_threads[NUMBER_OF_THREAD];
     int                all_threads_index = 0;
 
     // Open GPIO chip
-    chip = gpiod_chip_open_by_name(CHIP_NAME);
-    if (NULL == chip) {
+    CHIP = gpiod_chip_open_by_name(CHIP_NAME);
+    if (NULL == CHIP) {
         error("cannot open the chip");
     }
+    atexit(reset_gpio);
 
     issuer_arg.duration_sec      = 1;
     issuer_arg.duration_nano_sec = 0;
-    issuer_arg.count             = 20;
+    issuer_arg.count             = 5;
     issuer_arg.line_id           = GPIO_16;
-    issuer_arg.name              = "issuer";
-    issuer_arg.chip              = chip;
 
-    receiver_arg.count              = 10;
+    receiver_arg.count              = 3;
     receiver_arg.receiver_line_id   = GPIO_21;
     receiver_arg.controller_line_id = GPIO_17;
-    receiver_arg.chip               = chip;
-    receiver_arg.receiver_name      = "receiver";
-    receiver_arg.controller_name    = "controller";
 
     // Start the issuer.
     if (0 != pthread_create(&all_threads[all_threads_index++], NULL,
@@ -304,7 +295,5 @@ int main()
         pthread_join(all_threads[i], NULL);
     }
 
-    // Release the chip.
-    gpiod_chip_close(chip);
     return 0;
 }
